@@ -144,45 +144,11 @@ SecurityEvent
     rule?.valueExplanation || 'This rule provides high value due to its effectiveness in detecting critical security threats with minimal false positives. The cost is medium due to the computational resources required for analysis.'
   );
 
-  // Mock version misalignment data
+  // Version misalignment: two versions only — current (what clients have) and latest (available)
   const hasVersionMisalignment = rule?.attention === 'Version Misalignment';
-  const versionVariants = hasVersionMisalignment ? [
-    {
-      version: '1.1.4',
-      clientCount: 8,
-      clients: ['Nike', 'Adidas', 'Google', 'Tesla', 'Netflix', 'Adobe', 'SAP', 'Salesforce'],
-      kqlQuery: `// Version 1.1.4
-SecurityEvent
-| where EventID == 4625
-| where AccountType == "User"
-| summarize FailedAttempts = count() by Account, Computer, IpAddress
-| where FailedAttempts > 5
-| project TimeGenerated, Account, Computer, IpAddress, FailedAttempts`
-    },
-    {
-      version: '1.0.8',
-      clientCount: 4,
-      clients: ['Apple', 'Microsoft', 'Amazon', 'Meta'],
-      kqlQuery: `// Version 1.0.8
-SecurityEvent
-| where EventID == 4625
-| where AccountType == "User"
-| summarize FailedAttempts = count() by Account, Computer, IpAddress
-| where FailedAttempts > 3
-| project TimeGenerated, Account, Computer, IpAddress, FailedAttempts`
-    },
-    {
-      version: '0.9.2',
-      clientCount: 3,
-      clients: ['Oracle', 'Spotify', 'IBM'],
-      kqlQuery: `// Version 0.9.2
-SecurityEvent
-| where EventID == 4625
-| summarize FailedAttempts = count() by Account, Computer
-| where FailedAttempts > 3
-| project TimeGenerated, Account, Computer, FailedAttempts`
-    }
-  ] : [];
+  const versionCurrent = rule?.version ?? '1.0.8';
+  const versionLatest = versionCurrent.replace(/(\d+)$/, (n) => String(Number(n) + 1));
+  const [selectedVersion, setSelectedVersion] = useState<'current' | 'latest'>('latest');
 
   const toggleSection = (section: keyof typeof expandedSections) => {
     setExpandedSections(prev => ({
@@ -652,40 +618,53 @@ SecurityEvent
 
                     {/* Version Misalignment Section */}
                     {hasVersionMisalignment && (
-                      <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 space-y-3">
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className="w-5 h-5 text-orange-600" />
-                          <h4 className="text-sm font-medium text-orange-900">Version Misalignment Detected</h4>
+                      <div className="border border-orange-200 rounded-xl overflow-hidden">
+                        {/* Header */}
+                        <div className="bg-orange-50 px-4 py-3 flex items-center gap-2 border-b border-orange-200">
+                          <AlertTriangle className="w-4 h-4 text-orange-600 shrink-0" />
+                          <p className="text-xs text-orange-800">Select the version to align <strong>all clients</strong> to, then click <strong>Apply Changes</strong>.</p>
                         </div>
-                        <p className="text-xs text-orange-800">
-                          Multiple versions of this rule are deployed across clients. Review the KQL queries below:
-                        </p>
-                        <div className="space-y-3">
-                          {versionVariants.map((variant, idx) => (
-                            <div key={idx} className="bg-white border border-orange-200 rounded-lg p-3">
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-medium text-[#092E3F]">Version {variant.version}</span>
-                                  <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-[10px] rounded-full">
-                                    {variant.clientCount} clients
-                                  </span>
-                                </div>
+                        {/* Version cards */}
+                        <div className="divide-y divide-gray-100">
+                          {/* Current version */}
+                          <button
+                            onClick={() => setSelectedVersion('current')}
+                            className={`w-full text-left px-4 py-4 flex items-start gap-3 transition-colors ${selectedVersion === 'current' ? 'bg-orange-50' : 'bg-white hover:bg-gray-50'}`}
+                          >
+                            <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${selectedVersion === 'current' ? 'border-orange-500' : 'border-gray-300'}`}>
+                              {selectedVersion === 'current' && <span className="w-2 h-2 rounded-full bg-orange-500" />}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-sm font-semibold text-[#092E3F]">v{versionCurrent}</span>
+                                <span className="px-2 py-0.5 bg-gray-100 text-gray-500 text-[10px] rounded-full font-medium">Current</span>
                               </div>
-                              <div className="text-[10px] text-gray-600 mb-2 flex flex-wrap gap-1">
-                                {variant.clients.map((client, cidx) => (
-                                  <span key={cidx} className="px-1.5 py-0.5 bg-gray-100 rounded">
-                                    {client}
-                                  </span>
-                                ))}
-                              </div>
-                              <textarea
-                                value={variant.kqlQuery}
-                                readOnly
-                                className="w-full h-32 p-2 font-mono text-[10px] bg-gray-900 text-green-400 rounded border border-gray-700 focus:outline-none"
-                                style={{ resize: 'vertical' }}
-                              />
+                              <p className="text-xs text-[#092E3F]/55">Keep the version already deployed across clients</p>
                             </div>
-                          ))}
+                          </button>
+                          {/* Latest version */}
+                          <button
+                            onClick={() => setSelectedVersion('latest')}
+                            className={`w-full text-left px-4 py-4 flex items-start gap-3 transition-colors ${selectedVersion === 'latest' ? 'bg-orange-50' : 'bg-white hover:bg-gray-50'}`}
+                          >
+                            <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${selectedVersion === 'latest' ? 'border-orange-500' : 'border-gray-300'}`}>
+                              {selectedVersion === 'latest' && <span className="w-2 h-2 rounded-full bg-orange-500" />}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-sm font-semibold text-[#092E3F]">v{versionLatest}</span>
+                                <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-[10px] rounded-full font-medium">Latest</span>
+                              </div>
+                              <p className="text-xs text-[#092E3F]/55">Upgrade all clients to the newest available version</p>
+                            </div>
+                          </button>
+                        </div>
+                        {/* Summary */}
+                        <div className="bg-gray-50 px-4 py-3 border-t border-gray-200">
+                          <p className="text-xs text-[#092E3F]/60">
+                            All <span className="font-semibold text-[#092E3F]">{rule?.clientsApplied ?? 0} clients</span> will be aligned to{' '}
+                            <span className="font-semibold text-[#092E3F]">v{selectedVersion === 'latest' ? versionLatest : versionCurrent}</span>.
+                          </p>
                         </div>
                       </div>
                     )}
@@ -1299,6 +1278,9 @@ SecurityEvent
                     toast.success(
                       `Distributing ${rules.length} rule${rules.length !== 1 ? 's' : ''} to ${enabledCount} tenant${enabledCount !== 1 ? 's' : ''}`
                     );
+                  } else if (hasVersionMisalignment) {
+                    const v = selectedVersion === 'latest' ? versionLatest : versionCurrent;
+                    toast.success(`Aligned ${rule?.clientsApplied ?? 0} clients to v${v}`);
                   } else {
                     toast.success(`Applied changes to ${enabledCount} clients`);
                   }
