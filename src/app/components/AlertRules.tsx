@@ -574,9 +574,10 @@ export default function AlertRules() {
   const openActionSidebar = (rule: AlertRule) => {
     const run = statusOf(rule).run;
     setActionSidebarRule(rule);
-    setActionSidebarMode(run === 'distribute' ? 'distribution' : 'single');
+    // Value & Distribute opens in single mode (same feel as Align Value) — not distribution mode
+    setActionSidebarMode('single');
     setActionSidebarSection(
-      run === 'value' ? 'valueMatrix'
+      run === 'value' || run === 'distribute' ? 'valueMatrix'
       : run === 'clients' ? 'clients'
       : 'attentionAction'
     );
