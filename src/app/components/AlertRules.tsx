@@ -56,7 +56,7 @@ interface AlertRule {
   kqlQuery?: string;
 }
 
-type SortField = 'name' | 'author' | 'version' | 'value' | 'state' | 'clientsApplied' | 'attention';
+type SortField = 'name' | 'author' | 'version' | 'value' | 'state' | 'clientsApplied' | 'attention' | 'urgency';
 type SortDirection = 'asc' | 'desc';
 
 const mockAlertRules: AlertRule[] = [
@@ -523,6 +523,32 @@ const mockClients = [
   { id: '15', name: 'IBM' }
 ];
 
+// Derives a single status object per rule (importance stays in Value column)
+function statusOf(rule: AlertRule) {
+  const a = rule.attention;
+  if (a === 'New Rule')
+    return { urgency: 'high' as const, reason: 'Needs setup', resolve: 'Set up', run: 'distribute', desc: 'New rule — not yet valued or distributed.' };
+  if (a === 'High Value Alert' && rule.state === 'Disabled')
+    return { urgency: 'high' as const, reason: 'Off · high value', resolve: 'Enable', run: 'enable', desc: 'High-value detection is currently disabled.' };
+  if (a === 'Value Misalignment')
+    return { urgency: 'med' as const, reason: 'Value drift', resolve: 'Align value', run: 'value', desc: 'Value rating differs across client tenants.' };
+  if (a === 'Version Misalignment')
+    return { urgency: 'med' as const, reason: 'Version behind', resolve: 'Update', run: 'version', desc: 'A newer rule version is available.' };
+  if (a === 'Client Misalignment')
+    return { urgency: 'med' as const, reason: 'Client drift', resolve: 'Align clients', run: 'clients', desc: 'Deployed to a different client set than peers.' };
+  if (a === 'High Value Alert' && rule.state === 'Enabled')
+    return { urgency: 'med' as const, reason: 'Flagged noisy', resolve: 'Review', run: 'review', desc: 'Enabled high-value rule flagged for review.' };
+  return { urgency: 'none' as const, reason: 'Aligned', resolve: null, run: null, desc: 'In sync across all client tenants.' };
+}
+
+const URGENCY = {
+  high: { dot: '#b73520', text: '#b73520', pill: '#fae1dd', label: 'Urgent' },
+  med:  { dot: '#e27c0a', text: '#e27c0a', pill: '#feecc3', label: 'Needs sync' },
+  none: { dot: '#76ba3b', text: '#538828', pill: '#e5f3d4', label: 'Aligned' },
+} as const;
+
+const ALL_COLS = ['Author', 'Version', 'MITRE', 'Log Sources', 'Value', 'Clients'];
+
 const ITEMS_PER_PAGE = 10;
 
 export default function AlertRules() {
@@ -546,12 +572,12 @@ export default function AlertRules() {
   const [actionSidebarSection, setActionSidebarSection] = useState<'attentionAction' | 'valueMatrix' | 'clients' | 'query' | 'changelog' | 'comments'>('attentionAction');
 
   const openActionSidebar = (rule: AlertRule) => {
-    const action = rule.action;
+    const run = statusOf(rule).run;
     setActionSidebarRule(rule);
-    setActionSidebarMode(action === 'Value & Distribute' || action === 'Distribute' ? 'distribution' : 'single');
+    setActionSidebarMode(run === 'distribute' ? 'distribution' : 'single');
     setActionSidebarSection(
-      action === 'Align Value' ? 'valueMatrix'
-      : action === 'Align Clients' || action === 'Align' ? 'clients'
+      run === 'value' ? 'valueMatrix'
+      : run === 'clients' ? 'clients'
       : 'attentionAction'
     );
   };
@@ -580,6 +606,9 @@ export default function AlertRules() {
   // Card filter state
   const [cardFilter, setCardFilter] = useState<'update' | 'enable' | 'disable' | null>(null);
   const [mitreFilter, setMitreFilter] = useState<string | null>(null);
+  const [urgencyFilter, setUrgencyFilter] = useState<'high' | 'med' | 'none' | 'attention' | null>(null);
+  const [reasonFilter, setReasonFilter] = useState<string | null>(null);
+  const [hiddenCols, setHiddenCols] = useState<string[]>([]);
   
   // Client application modal states
   const [isApplyToClientsModalOpen, setIsApplyToClientsModalOpen] = useState(false);
@@ -660,6 +689,22 @@ export default function AlertRules() {
     };
   }, [isResizing]);
 
+  // Status by rule id
+  const stById = useMemo(() => {
+    const m: Record<string, ReturnType<typeof statusOf>> = {};
+    alertRules.forEach(r => { m[r.id] = statusOf(r); });
+    return m;
+  }, [alertRules]);
+
+  const reasonOptions = useMemo(() => {
+    const set: string[] = [];
+    alertRules.forEach(r => { const re = stById[r.id].reason; if (!set.includes(re)) set.push(re); });
+    return set;
+  }, [alertRules, stById]);
+
+  const colVisible = (c: string) => !hiddenCols.includes(c);
+  const toggleCol = (c: string) => setHiddenCols(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c]);
+
   // Calculate attention count
   const attentionCount = useMemo(() => {
     return alertRules.filter(rule =>
@@ -702,24 +747,37 @@ export default function AlertRules() {
       // Filter by MITRE tactic
       const matchesMitreFilter = !mitreFilter || rule.mitre.some(m => m.toLowerCase() === mitreFilter.toLowerCase());
 
-      return matchesSearch && matchesState && matchesValue && matchesAuthor && matchesAttention && matchesNewlyImported && matchesCardFilter && matchesMitreFilter;
+      // Filter by urgency/reason
+      const matchUrg = !urgencyFilter || (urgencyFilter === 'attention' ? stById[rule.id].urgency !== 'none' : stById[rule.id].urgency === urgencyFilter);
+      const matchReason = !reasonFilter || stById[rule.id].reason === reasonFilter;
+
+      return matchesSearch && matchesState && matchesValue && matchesAuthor && matchesAttention && matchesNewlyImported && matchesCardFilter && matchesMitreFilter && matchUrg && matchReason;
     });
-  }, [alertRules, searchQuery, selectedFilters, cardFilter, mitreFilter]);
+  }, [alertRules, searchQuery, selectedFilters, cardFilter, mitreFilter, urgencyFilter, reasonFilter, stById]);
 
   // Sort data
   const sortedRules = useMemo(() => {
     if (!sortColumn) return filteredRules;
 
     const sorted = [...filteredRules].sort((a, b) => {
-      let aVal: any = a[sortColumn];
-      let bVal: any = b[sortColumn];
+      let aVal: any;
+      let bVal: any;
+
+      if (sortColumn === 'urgency') {
+        const ord: Record<string, number> = { high: 0, med: 1, none: 2 };
+        aVal = ord[stById[a.id].urgency];
+        bVal = ord[stById[b.id].urgency];
+      } else {
+        aVal = a[sortColumn as keyof AlertRule];
+        bVal = b[sortColumn as keyof AlertRule];
+      }
 
       if (typeof aVal === 'string') {
-        return sortDirection === 'asc' 
+        return sortDirection === 'asc'
           ? aVal.localeCompare(bVal)
           : bVal.localeCompare(aVal);
       }
-      
+
       return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
     });
 
@@ -1006,28 +1064,22 @@ export default function AlertRules() {
               onUpdateClick={() => {
                 if (cardFilter === 'update') {
                   setCardFilter(null);
-                  toast.info('Update filter cleared');
                 } else {
                   setCardFilter('update');
-                  toast.success('Showing rules that need updates');
                 }
               }}
               onEnableClick={() => {
                 if (cardFilter === 'enable') {
                   setCardFilter(null);
-                  toast.info('Enable filter cleared');
                 } else {
                   setCardFilter('enable');
-                  toast.success('Showing rules to enable');
                 }
               }}
               onDisableClick={() => {
                 if (cardFilter === 'disable') {
                   setCardFilter(null);
-                  toast.info('Disable filter cleared');
                 } else {
                   setCardFilter('disable');
-                  toast.success('Showing rules to disable');
                 }
               }}
               activeFilter={cardFilter}
@@ -1043,13 +1095,11 @@ export default function AlertRules() {
                     ...prev,
                     attention: []
                   }));
-                  toast.info('Attention filter cleared');
                 } else {
                   setSelectedFilters(prev => ({
                     ...prev,
                     attention: ['High Value Alert', 'Version Misalignment', 'Disable Aligned', 'New Rule', 'Client Misalignment']
                   }));
-                  toast.success('Showing all items needing attention');
                 }
               }}
               className={`bg-white rounded-[4px] border border-gray-200 p-6 hover:bg-gray-50 transition-colors cursor-pointer text-left h-full flex flex-col ${
@@ -1089,7 +1139,7 @@ export default function AlertRules() {
         </div>
 
         {/* Active Card Filters Banner */}
-        {(cardFilter || mitreFilter || selectedFilters.attention.length > 0) && (
+        {(cardFilter || mitreFilter || selectedFilters.attention.length > 0 || urgencyFilter || reasonFilter) && (
           <div className="mb-6 bg-[#2A96A8]/10 border border-[#2A96A8]/30 rounded-xl p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3 flex-wrap">
@@ -1127,13 +1177,36 @@ export default function AlertRules() {
                     </button>
                   </span>
                 )}
+                {urgencyFilter && (
+                  <span className="px-3 py-1.5 bg-white rounded-lg text-sm text-[#092E3F] flex items-center gap-2">
+                    Urgency: {urgencyFilter === 'attention' ? 'Needs Attention' : urgencyFilter}
+                    <button
+                      onClick={() => setUrgencyFilter(null)}
+                      className="hover:bg-gray-100 rounded p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                )}
+                {reasonFilter && (
+                  <span className="px-3 py-1.5 bg-white rounded-lg text-sm text-[#092E3F] flex items-center gap-2">
+                    Status: {reasonFilter}
+                    <button
+                      onClick={() => setReasonFilter(null)}
+                      className="hover:bg-gray-100 rounded p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => {
                   setCardFilter(null);
                   setMitreFilter(null);
                   setSelectedFilters(prev => ({ ...prev, attention: [] }));
-                  toast.info('All card filters cleared');
+                  setUrgencyFilter(null);
+                  setReasonFilter(null);
                 }}
                 className="px-4 py-2 text-sm text-[#092E3F]/70 hover:text-[#092E3F] hover:bg-white/50 rounded-lg transition-all"
               >
@@ -1273,270 +1346,59 @@ export default function AlertRules() {
               )}
             </div>
 
-            {/* Filters */}
+            {/* Filters — Status reason filter */}
             <div className="relative">
-              <button 
-                className="flex items-center gap-2 px-[20px] py-[10px] bg-white border border-white rounded-xl hover:border-[#2A96A8] transition-all text-sm text-[#092E3F]"
+              <button
+                className={`flex items-center gap-2 px-[20px] py-[10px] bg-white border rounded-xl hover:border-[#2A96A8] transition-all text-sm text-[#092E3F] ${reasonFilter ? 'border-[#2A96A8]' : 'border-white'}`}
                 onClick={() => setIsFiltersDropdownOpen(!isFiltersDropdownOpen)}
               >
                 <Filter className="w-4 h-4 text-[#092E3F]/60" />
-                <span>Filters</span>
-                {(selectedFilters.state.length > 0 || selectedFilters.value.length > 0 || selectedFilters.author.length > 0 || selectedFilters.attention.length > 0) && (
-                  <span className="ml-1 px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">
-                    {selectedFilters.state.length + selectedFilters.value.length + selectedFilters.author.length + selectedFilters.attention.length}
-                  </span>
+                <span>{reasonFilter ? `Status: ${reasonFilter}` : 'Status'}</span>
+                {reasonFilter && (
+                  <span className="ml-1 px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">1</span>
                 )}
               </button>
 
               {isFiltersDropdownOpen && (
                 <>
-                  <div 
-                    className="fixed inset-0 z-40" 
+                  <div
+                    className="fixed inset-0 z-40"
                     onClick={() => setIsFiltersDropdownOpen(false)}
                   />
-                  <div className="absolute left-0 top-full mt-2 w-72 bg-white rounded-xl shadow-xl border border-white z-50 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+                  <div className="absolute left-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-white py-2 z-50 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
                     <div className="px-4 py-3 border-b border-gray-100">
-                      <p className="text-xs uppercase tracking-wider text-[#092E3F]/50">Advanced Filters</p>
+                      <p className="text-xs uppercase tracking-wider text-[#092E3F]/50">Filter by Status</p>
                     </div>
-
-                    {/* State Filter */}
-                    <div className="border-b border-gray-100">
-                      <button
-                        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                        onClick={() => toggleFilterSection('state')}
-                      >
-                        <span className="text-sm text-[#092E3F]">State</span>
-                        <div className="flex items-center gap-2">
-                          {selectedFilters.state.length > 0 && (
-                            <span className="px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">
-                              {selectedFilters.state.length}
-                            </span>
-                          )}
-                          {expandedFilterSection === 'state' ? (
-                            <ChevronUp className="w-4 h-4 text-[#092E3F]/60" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-[#092E3F]/60" />
-                          )}
-                        </div>
-                      </button>
-                      {expandedFilterSection === 'state' && (
-                        <div className="px-4 pb-2 space-y-1">
-                          {uniqueStates.map((state) => (
-                            <label
-                              key={state}
-                              className="flex items-center gap-3 px-2 py-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
-                            >
-                              <div className="relative flex items-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFilters.state.includes(state)}
-                                  onChange={() => toggleFilterValue('state', state)}
-                                  className="peer sr-only"
-                                />
-                                <div className="w-4 h-4 rounded border-2 border-gray-300 peer-checked:bg-[#2A96A8] peer-checked:border-[#2A96A8] transition-all duration-200 flex items-center justify-center">
-                                  <svg 
-                                    className={`w-2.5 h-2.5 text-white transition-all duration-200 ${
-                                      selectedFilters.state.includes(state) 
-                                        ? 'opacity-100 scale-100' 
-                                        : 'opacity-0 scale-50'
-                                    }`}
-                                    fill="none" 
-                                    viewBox="0 0 24 24" 
-                                    stroke="currentColor" 
-                                    strokeWidth="3"
-                                  >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </div>
-                              </div>
-                              <span className="text-sm text-[#092E3F]">{state}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
+                    <div className="p-2 space-y-1">
+                      {reasonOptions.map((option) => (
+                        <button
+                          key={option}
+                          className={`w-full px-3 py-2 text-left text-sm rounded-lg transition-colors flex items-center justify-between ${
+                            reasonFilter === option
+                              ? 'bg-[#2A96A8]/10 text-[#2A96A8]'
+                              : 'text-[#092E3F] hover:bg-gray-50'
+                          }`}
+                          onClick={() => {
+                            setReasonFilter(reasonFilter === option ? null : option);
+                            setUrgencyFilter(null);
+                            setCurrentPage(1);
+                            setIsFiltersDropdownOpen(false);
+                          }}
+                        >
+                          <span>{option}</span>
+                          {reasonFilter === option && <Check className="w-4 h-4" />}
+                        </button>
+                      ))}
                     </div>
-
-                    {/* Value Filter */}
-                    <div className="border-b border-gray-100">
-                      <button
-                        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                        onClick={() => toggleFilterSection('value')}
-                      >
-                        <span className="text-sm text-[#092E3F]">Value</span>
-                        <div className="flex items-center gap-2">
-                          {selectedFilters.value.length > 0 && (
-                            <span className="px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">
-                              {selectedFilters.value.length}
-                            </span>
-                          )}
-                          {expandedFilterSection === 'value' ? (
-                            <ChevronUp className="w-4 h-4 text-[#092E3F]/60" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-[#092E3F]/60" />
-                          )}
-                        </div>
-                      </button>
-                      {expandedFilterSection === 'value' && (
-                        <div className="px-4 pb-2 space-y-1">
-                          {uniqueValues.map((value) => (
-                            <label
-                              key={value}
-                              className="flex items-center gap-3 px-2 py-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
-                            >
-                              <div className="relative flex items-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFilters.value.includes(value)}
-                                  onChange={() => toggleFilterValue('value', value)}
-                                  className="peer sr-only"
-                                />
-                                <div className="w-4 h-4 rounded border-2 border-gray-300 peer-checked:bg-[#2A96A8] peer-checked:border-[#2A96A8] transition-all duration-200 flex items-center justify-center">
-                                  <svg 
-                                    className={`w-2.5 h-2.5 text-white transition-all duration-200 ${
-                                      selectedFilters.value.includes(value) 
-                                        ? 'opacity-100 scale-100' 
-                                        : 'opacity-0 scale-50'
-                                    }`}
-                                    fill="none" 
-                                    viewBox="0 0 24 24" 
-                                    stroke="currentColor" 
-                                    strokeWidth="3"
-                                  >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </div>
-                              </div>
-                              <span className="text-sm text-[#092E3F]">{value}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Author Filter */}
-                    <div className="border-b border-gray-100">
-                      <button
-                        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                        onClick={() => toggleFilterSection('author')}
-                      >
-                        <span className="text-sm text-[#092E3F]">Author</span>
-                        <div className="flex items-center gap-2">
-                          {selectedFilters.author.length > 0 && (
-                            <span className="px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">
-                              {selectedFilters.author.length}
-                            </span>
-                          )}
-                          {expandedFilterSection === 'author' ? (
-                            <ChevronUp className="w-4 h-4 text-[#092E3F]/60" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-[#092E3F]/60" />
-                          )}
-                        </div>
-                      </button>
-                      {expandedFilterSection === 'author' && (
-                        <div className="px-4 pb-2 space-y-1">
-                          {uniqueAuthors.map((author) => (
-                            <label
-                              key={author}
-                              className="flex items-center gap-3 px-2 py-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
-                            >
-                              <div className="relative flex items-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFilters.author.includes(author)}
-                                  onChange={() => toggleFilterValue('author', author)}
-                                  className="peer sr-only"
-                                />
-                                <div className="w-4 h-4 rounded border-2 border-gray-300 peer-checked:bg-[#2A96A8] peer-checked:border-[#2A96A8] transition-all duration-200 flex items-center justify-center">
-                                  <svg 
-                                    className={`w-2.5 h-2.5 text-white transition-all duration-200 ${
-                                      selectedFilters.author.includes(author) 
-                                        ? 'opacity-100 scale-100' 
-                                        : 'opacity-0 scale-50'
-                                    }`}
-                                    fill="none" 
-                                    viewBox="0 0 24 24" 
-                                    stroke="currentColor" 
-                                    strokeWidth="3"
-                                  >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </div>
-                              </div>
-                              <span className="text-sm text-[#092E3F]">{author === 'Custom' ? 'Company Name' : author}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Attention Filter */}
-                    <div className="border-b border-gray-100">
-                      <button
-                        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                        onClick={() => toggleFilterSection('attention')}
-                      >
-                        <span className="text-sm text-[#092E3F]">Attention</span>
-                        <div className="flex items-center gap-2">
-                          {selectedFilters.attention.length > 0 && (
-                            <span className="px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">
-                              {selectedFilters.attention.length}
-                            </span>
-                          )}
-                          {expandedFilterSection === 'attention' ? (
-                            <ChevronUp className="w-4 h-4 text-[#092E3F]/60" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-[#092E3F]/60" />
-                          )}
-                        </div>
-                      </button>
-                      {expandedFilterSection === 'attention' && (
-                        <div className="px-4 pb-2 space-y-1">
-                          {uniqueAttention.map((attention) => (
-                            <label
-                              key={attention}
-                              className="flex items-center gap-3 px-2 py-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
-                            >
-                              <div className="relative flex items-center">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFilters.attention.includes(attention)}
-                                  onChange={() => toggleFilterValue('attention', attention)}
-                                  className="peer sr-only"
-                                />
-                                <div className="w-4 h-4 rounded border-2 border-gray-300 peer-checked:bg-[#2A96A8] peer-checked:border-[#2A96A8] transition-all duration-200 flex items-center justify-center">
-                                  <svg 
-                                    className={`w-2.5 h-2.5 text-white transition-all duration-200 ${
-                                      selectedFilters.attention.includes(attention) 
-                                        ? 'opacity-100 scale-100' 
-                                        : 'opacity-0 scale-50'
-                                    }`}
-                                    fill="none" 
-                                    viewBox="0 0 24 24" 
-                                    stroke="currentColor" 
-                                    strokeWidth="3"
-                                  >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </div>
-                              </div>
-                              <span className="text-sm text-[#092E3F]">{attention}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Clear Filters */}
-                    <div className="p-4">
+                    <div className="px-3 pb-2">
                       <button
                         onClick={() => {
-                          clearFilters();
+                          setReasonFilter(null);
                           setIsFiltersDropdownOpen(false);
                         }}
                         className="w-full px-4 py-2 bg-gray-100 hover:bg-gray-200 text-[#092E3F] rounded-lg text-sm transition-colors"
                       >
-                        Clear All Filters
+                        Clear Filter
                       </button>
                     </div>
                   </div>
@@ -1546,58 +1408,53 @@ export default function AlertRules() {
 
             {/* Columns */}
             <div className="relative">
-              <button 
+              <button
                 className="flex items-center gap-2 px-[20px] py-[10px] bg-white border border-white rounded-xl hover:border-[#2A96A8] transition-all text-sm text-[#092E3F]"
                 onClick={() => setIsColumnsDropdownOpen(!isColumnsDropdownOpen)}
               >
                 <Columns3 className="w-4 h-4 text-[#092E3F]/60" />
                 <span>Columns</span>
+                {hiddenCols.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 bg-[#2A96A8] text-white text-xs rounded-full">{hiddenCols.length}</span>
+                )}
               </button>
 
               {isColumnsDropdownOpen && (
                 <>
-                  <div 
-                    className="fixed inset-0 z-40" 
+                  <div
+                    className="fixed inset-0 z-40"
                     onClick={() => setIsColumnsDropdownOpen(false)}
                   />
-                  <div className="absolute left-0 top-full mt-2 w-64 bg-white rounded-xl shadow-xl border border-white py-2 z-50 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+                  <div className="absolute left-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-white py-2 z-50 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
                     <div className="px-4 py-3 border-b border-gray-100">
                       <p className="text-xs uppercase tracking-wider text-[#092E3F]/50">Toggle Columns</p>
                     </div>
                     <div className="p-2 space-y-1">
-                      {Object.entries(visibleColumns).map(([key, value]) => (
+                      {ALL_COLS.map((col) => (
                         <label
-                          key={key}
+                          key={col}
                           className="flex items-center gap-3 px-2 py-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
                         >
                           <div className="relative flex items-center">
                             <input
                               type="checkbox"
-                              checked={value}
-                              onChange={(e) => 
-                                setVisibleColumns(prev => ({ ...prev, [key]: e.target.checked }))
-                              }
+                              checked={colVisible(col)}
+                              onChange={() => toggleCol(col)}
                               className="peer sr-only"
                             />
                             <div className="w-4 h-4 rounded border-2 border-gray-300 peer-checked:bg-[#2A96A8] peer-checked:border-[#2A96A8] transition-all duration-200 flex items-center justify-center">
-                              <svg 
-                                className={`w-2.5 h-2.5 text-white transition-all duration-200 ${
-                                  value 
-                                    ? 'opacity-100 scale-100' 
-                                    : 'opacity-0 scale-50'
-                                }`}
-                                fill="none" 
-                                viewBox="0 0 24 24" 
-                                stroke="currentColor" 
+                              <svg
+                                className={`w-2.5 h-2.5 text-white transition-all duration-200 ${colVisible(col) ? 'opacity-100 scale-100' : 'opacity-0 scale-50'}`}
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
                                 strokeWidth="3"
                               >
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                               </svg>
                             </div>
                           </div>
-                          <span className="text-sm text-[#092E3F] capitalize">
-                            {key.replace(/([A-Z])/g, ' $1').trim()}
-                          </span>
+                          <span className="text-sm text-[#092E3F]">{col}</span>
                         </label>
                       ))}
                     </div>
@@ -1676,8 +1533,8 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.author && (
-                    <th 
+                  {(visibleColumns.author && colVisible('Author')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none cursor-pointer hover:bg-gray-100 transition-colors"
                       style={{ width: `${columnWidths.author}px`, minWidth: `${columnWidths.author}px`, maxWidth: `${columnWidths.author}px` }}
                       onClick={() => handleSort('author')}
@@ -1686,7 +1543,7 @@ export default function AlertRules() {
                         Author
                         {getSortIcon('author')}
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('author')}
                         onClick={(e) => e.stopPropagation()}
@@ -1695,8 +1552,8 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.version && (
-                    <th 
+                  {(visibleColumns.version && colVisible('Version')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none cursor-pointer hover:bg-gray-100 transition-colors"
                       style={{ width: `${columnWidths.version}px`, minWidth: `${columnWidths.version}px`, maxWidth: `${columnWidths.version}px` }}
                       onClick={() => handleSort('version')}
@@ -1705,7 +1562,7 @@ export default function AlertRules() {
                         Version
                         {getSortIcon('version')}
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('version')}
                         onClick={(e) => e.stopPropagation()}
@@ -1714,15 +1571,15 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.mitre && (
-                    <th 
+                  {(visibleColumns.mitre && colVisible('MITRE')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none"
                       style={{ width: `${columnWidths.mitre}px`, minWidth: `${columnWidths.mitre}px`, maxWidth: `${columnWidths.mitre}px` }}
                     >
                       <div className="flex items-center gap-2">
                         MITRE
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('mitre')}
                         onClick={(e) => e.stopPropagation()}
@@ -1731,15 +1588,15 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.logSources && (
-                    <th 
+                  {(visibleColumns.logSources && colVisible('Log Sources')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none"
                       style={{ width: `${columnWidths.logSources}px`, minWidth: `${columnWidths.logSources}px`, maxWidth: `${columnWidths.logSources}px` }}
                     >
                       <div className="flex items-center gap-2">
                         Log Sources
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('logSources')}
                         onClick={(e) => e.stopPropagation()}
@@ -1748,8 +1605,8 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.value && (
-                    <th 
+                  {(visibleColumns.value && colVisible('Value')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none cursor-pointer hover:bg-gray-100 transition-colors"
                       style={{ width: `${columnWidths.value}px`, minWidth: `${columnWidths.value}px`, maxWidth: `${columnWidths.value}px` }}
                       onClick={() => handleSort('value')}
@@ -1758,7 +1615,7 @@ export default function AlertRules() {
                         Value
                         {getSortIcon('value')}
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('value')}
                         onClick={(e) => e.stopPropagation()}
@@ -1768,7 +1625,7 @@ export default function AlertRules() {
                     </th>
                   )}
                   {visibleColumns.state && (
-                    <th 
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none cursor-pointer hover:bg-gray-100 transition-colors"
                       style={{ width: `${columnWidths.state}px`, minWidth: `${columnWidths.state}px`, maxWidth: `${columnWidths.state}px` }}
                       onClick={() => handleSort('state')}
@@ -1777,7 +1634,7 @@ export default function AlertRules() {
                         State
                         {getSortIcon('state')}
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('state')}
                         onClick={(e) => e.stopPropagation()}
@@ -1786,8 +1643,8 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.clientsApplied && (
-                    <th 
+                  {(visibleColumns.clientsApplied && colVisible('Clients')) && (
+                    <th
                       className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-white relative group select-none cursor-pointer hover:bg-gray-100 transition-colors"
                       style={{ width: `${columnWidths.clientsApplied}px`, minWidth: `${columnWidths.clientsApplied}px`, maxWidth: `${columnWidths.clientsApplied}px` }}
                       onClick={() => handleSort('clientsApplied')}
@@ -1796,7 +1653,7 @@ export default function AlertRules() {
                         Clients Applied
                         {getSortIcon('clientsApplied')}
                       </div>
-                      <div 
+                      <div
                         className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
                         onMouseDown={handleMouseDown('clientsApplied')}
                         onClick={(e) => e.stopPropagation()}
@@ -1805,33 +1662,10 @@ export default function AlertRules() {
                       </div>
                     </th>
                   )}
-                  {visibleColumns.attention && (
-                    <th 
-                      className="px-4 py-3 text-right text-xs uppercase tracking-wider text-[#092E3F]/70 bg-[#e5f2f4] relative group select-none cursor-pointer hover:bg-[#d0e8ec] transition-colors"
-                      style={{ width: `${columnWidths.attention}px`, minWidth: `${columnWidths.attention}px`, maxWidth: `${columnWidths.attention}px` }}
-                      onClick={() => handleSort('attention')}
-                    >
-                      <div className="flex items-center justify-end gap-2">
-                        Attention
-                        {getSortIcon('attention')}
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-[#2A96A8] transition-colors flex items-center justify-center"
-                        onMouseDown={handleMouseDown('attention')}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="w-0.5 h-4 bg-gray-300 group-hover:bg-[#2A96A8]" />
-                      </div>
-                    </th>
-                  )}
-                  {visibleColumns.action && (
-                    <th 
-                      className="px-4 py-3 text-center text-xs uppercase tracking-wider text-[#092E3F]/70 bg-[#e5f2f4] select-none"
-                      style={{ width: `${columnWidths.action}px`, minWidth: `${columnWidths.action}px`, maxWidth: `${columnWidths.action}px` }}
-                    >
-                      Action
-                    </th>
-                  )}
+                  <th onClick={() => handleSort('urgency')} style={{ width: '180px', minWidth: '180px' }} className="px-4 py-3 text-left text-xs uppercase tracking-wider text-[#092E3F]/70 bg-[#d8f3f5] relative group select-none cursor-pointer hover:bg-[#c8edf0] transition-colors">
+                    <div className="flex items-center gap-2">Attention{getSortIcon('urgency')}</div>
+                  </th>
+                  <th style={{ width: '150px', minWidth: '150px' }} className="px-4 py-3 text-right text-xs uppercase tracking-wider text-[#092E3F]/70 bg-[#d8f3f5] select-none">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -1873,7 +1707,7 @@ export default function AlertRules() {
                         </div>
                       </td>
                     )}
-                    {visibleColumns.author && (
+                    {(visibleColumns.author && colVisible('Author')) && (
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           {rule.author === 'Microsoft' ? (
@@ -1891,12 +1725,12 @@ export default function AlertRules() {
                         </div>
                       </td>
                     )}
-                    {visibleColumns.version && (
+                    {(visibleColumns.version && colVisible('Version')) && (
                       <td className="px-4 py-3">
                         <span className="text-sm text-[#092E3F]">{rule.version}</span>
                       </td>
                     )}
-                    {visibleColumns.mitre && (
+                    {(visibleColumns.mitre && colVisible('MITRE')) && (
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1 flex-wrap">
                           <span className="px-2 py-0.5 bg-blue-100/80 text-blue-500 text-xs rounded">
@@ -1923,7 +1757,7 @@ export default function AlertRules() {
                         </div>
                       </td>
                     )}
-                    {visibleColumns.logSources && (
+                    {(visibleColumns.logSources && colVisible('Log Sources')) && (
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1 flex-wrap">
                           <span className="px-2 py-0.5 bg-emerald-100/70 text-emerald-600 text-xs rounded">
@@ -1950,15 +1784,15 @@ export default function AlertRules() {
                         </div>
                       </td>
                     )}
-                    {visibleColumns.value && (
+                    {(visibleColumns.value && colVisible('Value')) && (
                       <td className="px-4 py-3">
-                        <span className={`px-3 py-1 rounded-full text-xs ${
-                          rule.value === 'High' 
-                            ? 'bg-[#2A96A8] text-white'
+                        <span className="px-3 py-1 rounded-full text-xs" style={
+                          rule.value === 'High'
+                            ? { background: '#d8f3f5', color: '#266778', fontWeight: 700 }
                             : rule.value === 'Medium'
-                            ? 'bg-[#2A96A8]/30 text-[#2A96A8]'
-                            : 'bg-[#2A96A8]/10 text-[#2A96A8]/60'
-                        }`}>
+                            ? { background: '#f3f4f6', color: '#495565', fontWeight: 400 }
+                            : { background: 'transparent', color: '#727b8d', fontWeight: 400 }
+                        }>
                           {rule.value}
                         </span>
                       </td>
@@ -1974,7 +1808,7 @@ export default function AlertRules() {
                         </span>
                       </td>
                     )}
-                    {visibleColumns.clientsApplied && (
+                    {(visibleColumns.clientsApplied && colVisible('Clients')) && (
                       <td className="px-4 py-3">
                         <TooltipProvider>
                           <Tooltip>
@@ -2005,73 +1839,48 @@ export default function AlertRules() {
                         </TooltipProvider>
                       </td>
                     )}
-                    {visibleColumns.attention && (
-                      <td className="px-4 py-3 bg-[#f8fdfe]">
-                        <div className="flex justify-end">
-                          <span className={`px-3 py-1.5 rounded-full text-xs whitespace-nowrap ${
-                            rule.attention === 'High Value Alert'
-                              ? 'bg-[#b73520] text-white'
-                              : rule.attention === 'Medium Value Alert'
-                              ? 'bg-[#ffdbb4] text-[#092E3F]'
-                              : rule.attention === 'Low Value Alert'
-                              ? 'bg-[#fff9a8] text-[#092E3F]'
-                              : rule.attention === 'Version Misalignment'
-                              ? 'bg-orange-100 text-orange-700'
-                              : rule.attention === 'Disable Aligned'
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : rule.attention === 'New Rule'
-                              ? 'bg-blue-100 text-blue-700'
-                              : rule.attention === 'Client Misalignment'
-                              ? 'bg-purple-100 text-purple-700'
-                              : rule.attention === 'Value Misalignment'
-                              ? 'bg-pink-100 text-pink-600'
-                              : 'bg-gray-100 text-gray-700'
-                          }`}>
-                            {rule.attention}
+                    <td className="px-4 py-3 bg-[#effbfc]">
+                      {(() => {
+                        const st = stById[rule.id];
+                        const u = URGENCY[st.urgency];
+                        return (
+                          <span className="inline-flex items-center gap-2 pl-2 pr-3 py-1 rounded-full text-xs" style={{ background: u.pill, color: u.text }} title={st.desc}>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: u.dot }} />
+                            <span className="whitespace-nowrap font-semibold">{rule.attention}</span>
                           </span>
-                        </div>
-                      </td>
-                    )}
-                    {visibleColumns.action && (
-                      <td className="px-4 py-3 bg-[#f8fdfe]" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-center gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openActionSidebar(rule);
-                            }}
-                            className={`px-3 py-1 rounded-lg text-xs transition-colors ${
-                              rule.action === 'Enable'
-                                ? 'bg-emerald-100/70 text-emerald-600 hover:bg-emerald-200'
-                                : rule.action === 'Disable'
-                                ? 'bg-gray-100/80 text-gray-500 hover:bg-gray-200'
-                                : rule.action === 'Align'
-                                ? 'bg-orange-100 text-orange-600 hover:bg-orange-200'
-                                : rule.action === 'Align Version'
-                                ? 'bg-orange-100 text-orange-600 hover:bg-orange-200'
-                                : rule.action === 'Align Value'
-                                ? 'bg-pink-100 text-pink-600 hover:bg-pink-200'
-                                : rule.action === 'Distribute'
-                                ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
-                                : rule.action === 'Value & Distribute'
-                                ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
-                                : 'bg-gray-100/80 text-gray-500 hover:bg-gray-200'
-                            }`}
-                          >
-                            {rule.action}
-                          </button>
-                          <button
-                            className="p-1 hover:bg-gray-200 rounded transition-colors opacity-0 group-hover:opacity-100"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toast.info(`More actions for: ${rule.name}`);
-                            }}
-                          >
-                            <MoreHorizontal className="w-4 h-4 text-[#092E3F]/60" />
-                          </button>
-                        </div>
-                      </td>
-                    )}
+                        );
+                      })()}
+                    </td>
+                    <td className="px-4 py-3 bg-[#effbfc]" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        const st = stById[rule.id];
+                        if (st.urgency === 'none') {
+                          return (
+                            <div className="flex items-center justify-end gap-1">
+                              <span className="px-2.5 py-1 rounded-lg text-xs text-[#092E3F]/55 flex items-center gap-1.5">
+                                <span className={`w-1.5 h-1.5 rounded-full ${rule.state === 'Enabled' ? 'bg-[#3f9d6d]' : 'bg-gray-300'}`} />{rule.state}
+                              </span>
+                            </div>
+                          );
+                        }
+                        const u = URGENCY[st.urgency];
+                        const solid = st.urgency === 'high';
+                        return (
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openActionSidebar(rule); }}
+                              className="px-3 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1.5 hover:brightness-95"
+                              style={solid ? { background: u.dot, color: '#fff', fontWeight: 700 } : { background: u.pill, color: u.text, fontWeight: 700 }}
+                            >
+                              {rule.action}
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); toast.info(`More actions for: ${rule.name}`); }} className="p-1 hover:bg-gray-200 rounded transition-colors opacity-0 group-hover:opacity-100">
+                              <MoreHorizontal className="w-4 h-4 text-[#092E3F]/60" />
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
