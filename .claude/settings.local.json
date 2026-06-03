@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install *)",
+      "Bash(npm install *)",
+      "Bash(volta install *)",
+      "Bash(pnpm --version)",
+      "Bash(pnpm config *)",
+      "Bash(node -e ' *)",
+      "Bash(cp package.json package.json.bak)",
+      "Bash(cp package.clean.json package.json)"
+    ]
+  }
+}

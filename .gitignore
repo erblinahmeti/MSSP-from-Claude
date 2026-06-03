@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.pnpm-store/
+*.local
+.DS_Store
+package.json.bak
+package.clean.json

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "custom-1",
+    "name": "Suspicious PowerShell Activity",
+    "author": "Seculyze",
+    "version": "1.0.0",
+    "mitre": ["Execution", "Defense Evasion"],
+    "logSources": ["WindowsEvent", "SecurityEvent"],
+    "value": "High",
+    "state": "Enabled",
+    "clientsApplied": 5,
+    "clientNames": ["Nike", "Adidas", "Apple", "Microsoft", "Google"],
+    "attention": "High Value Alert",
+    "action": "Enable"
+  },
+  {
+    "id": "custom-2",
+    "name": "Unusual Network Traffic Pattern",
+    "author": "Seculyze",
+    "version": "1.2.0",
+    "mitre": ["Command and Control", "Exfiltration"],
+    "logSources": ["Syslog", "CommonSecurityLog"],
+    "value": "Medium",
+    "state": "Disabled",
+    "clientsApplied": 3,
+    "clientNames": ["Tesla", "Meta", "Netflix"],
+    "attention": "Medium Value Alert",
+    "action": "Enable"
+  },
+  {
+    "id": "custom-3",
+    "name": "Failed Authentication Attempts",
+    "author": "Microsoft",
+    "version": "2.1.0",
+    "mitre": ["Credential Access"],
+    "logSources": ["AzureActivity", "SecurityEvent"],
+    "value": "High",
+    "state": "Enabled",
+    "clientsApplied": 10,
+    "clientNames": ["Nike", "Adidas", "Apple", "Microsoft", "Google", "Amazon", "Tesla", "Meta", "Netflix", "Spotify"],
+    "attention": "High Value Alert",
+    "action": "Enable"
+  }
+]
