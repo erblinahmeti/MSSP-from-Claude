@@ -1130,6 +1130,60 @@ SecurityEvent
           {/* Distribution Mode Content */}
           {mode === 'distribution' && (
             <>
+              {/* Step 1: Value Matrix — shown only for Value & Distribute */}
+              {rule?.action === 'Value & Distribute' && (
+                <div className="pb-6 border-b border-gray-200">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="w-5 h-5 rounded-full bg-[#092E3F] text-white text-[11px] font-bold flex items-center justify-center shrink-0">1</span>
+                    <h3 className="text-sm font-semibold text-[#092E3F]">Set the rule value</h3>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    <div className="grid grid-cols-4 gap-1.5 text-[10px]">
+                      <div></div>
+                      <div className="text-center font-medium text-[#092E3F]/60">Low Cost</div>
+                      <div className="text-center font-medium text-[#092E3F]/60">Med Cost</div>
+                      <div className="text-center font-medium text-[#092E3F]/60">High Cost</div>
+                      {(['high', 'med', 'low'] as const).map(gain => (
+                        <>
+                          <div key={`label-${gain}`} className="flex items-center text-[10px] font-medium text-[#092E3F]/60 capitalize">{gain.charAt(0).toUpperCase() + gain.slice(1)} Gain</div>
+                          {(['low', 'med', 'high'] as const).map(cost => {
+                            const val = getMatrixValue(gain, cost);
+                            const selected = isSelectedCell(gain, cost);
+                            return (
+                              <button
+                                key={`${gain}-${cost}`}
+                                onClick={() => handleMatrixCellClick(gain, cost)}
+                                className={`h-10 ${getMatrixColor(val)} rounded flex items-center justify-center text-white text-xs font-bold hover:opacity-80 transition-opacity ${selected ? 'ring-2 ring-[#2A96A8] ring-offset-1' : ''}`}
+                              >
+                                {val}
+                              </button>
+                            );
+                          })}
+                        </>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-[10px]">
+                      <div className="flex items-center gap-1"><div className="w-2.5 h-2.5 bg-green-500 rounded" /><span className="text-[#092E3F]/60">High</span></div>
+                      <div className="flex items-center gap-1"><div className="w-2.5 h-2.5 bg-yellow-400 rounded" /><span className="text-[#092E3F]/60">Medium</span></div>
+                      <div className="flex items-center gap-1"><div className="w-2.5 h-2.5 bg-red-400 rounded" /><span className="text-[#092E3F]/60">Low</span></div>
+                      <div className="ml-auto">
+                        <span className="font-semibold text-[#2A96A8]">
+                          Selected: {getMatrixValue(matrixPosition.gain, matrixPosition.cost) === 'H' ? 'High' : getMatrixValue(matrixPosition.gain, matrixPosition.cost) === 'M' ? 'Medium' : 'Low'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2 label — only shown for Value & Distribute */}
+              {rule?.action === 'Value & Distribute' && (
+                <div className="flex items-center gap-2 -mb-2">
+                  <span className="w-5 h-5 rounded-full bg-[#092E3F] text-white text-[11px] font-bold flex items-center justify-center shrink-0">2</span>
+                  <h3 className="text-sm font-semibold text-[#092E3F]">Select clients to distribute to</h3>
+                </div>
+              )}
+
               {/* Apply to All Clients */}
               <div className="pb-4 border-b border-gray-200">
                 <div className="flex items-center justify-between">
@@ -1275,9 +1329,12 @@ SecurityEvent
                     }
                     const selectedClientIds = clients.filter(c => c.enabled).map(c => c.id);
                     onDistribute?.(selectedClientIds);
-                    toast.success(
-                      `Distributing ${rules.length} rule${rules.length !== 1 ? 's' : ''} to ${enabledCount} tenant${enabledCount !== 1 ? 's' : ''}`
-                    );
+                    if (rule?.action === 'Value & Distribute') {
+                      const chosenValue = getMatrixValue(matrixPosition.gain, matrixPosition.cost) === 'H' ? 'High' : getMatrixValue(matrixPosition.gain, matrixPosition.cost) === 'M' ? 'Medium' : 'Low';
+                      toast.success(`Rule valued as ${chosenValue} and distributed to ${enabledCount} client${enabledCount !== 1 ? 's' : ''}`);
+                    } else {
+                      toast.success(`Distributing ${rules.length} rule${rules.length !== 1 ? 's' : ''} to ${enabledCount} tenant${enabledCount !== 1 ? 's' : ''}`);
+                    }
                   } else if (hasVersionMisalignment) {
                     const v = selectedVersion === 'latest' ? versionLatest : versionCurrent;
                     toast.success(`Aligned ${rule?.clientsApplied ?? 0} clients to v${v}`);
